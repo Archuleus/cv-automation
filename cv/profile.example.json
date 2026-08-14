@@ -1,0 +1,96 @@
+{
+  "_note": "Copy this to cv/profile.json and fill it in. profile.json is git-ignored because it holds personal data. Everything here is used: the scorer reads skills, role families and geography; the drafter reads experience and projects and is forbidden from naming any technology that does not appear in this file.",
+
+  "name": "Your Name",
+  "headline": "Full-Stack Developer | Computer Engineer",
+  "email": "you@example.com",
+  "phone": "+90 555 000 0000",
+  "location": "Istanbul, Türkiye",
+  "website": "https://your-portfolio.example",
+  "linkedin": "https://linkedin.com/in/yourhandle",
+  "github": "https://github.com/yourhandle",
+
+  "graduation_year": 2026,
+  "years_of_experience": 1,
+  "seniority_targets": ["junior", "entry", "mid"],
+  "seniority_excluded": ["intern", "senior", "staff", "principal", "lead", "manager", "director"],
+
+  "spoken_languages": { "tr": "native", "en": "fluent" },
+
+  "geography": {
+    "primary_country": "TR",
+    "primary_weight": 0.7,
+    "remote_abroad_weight": 0.3,
+    "onsite_countries": ["TR"],
+    "preferred_tr_cities": ["İstanbul", "Ankara", "İzmir"],
+    "requires_visa_sponsorship_abroad": true
+  },
+
+  "cv_variants": {
+    "backend_en": {
+      "file": "cv/Your_CV_EN.pdf",
+      "language": "en",
+      "emphasis": ["java", "spring boot", "postgresql", "docker"]
+    },
+    "backend_tr": {
+      "file": "cv/Your_CV_TR.pdf",
+      "language": "tr",
+      "emphasis": ["java", "spring boot", "postgresql", "docker"]
+    }
+  },
+
+  "education": "BSc Computer Engineering, Your University, 2022-2026",
+
+  "experience": [
+    {
+      "role": "Backend Developer (Intern)",
+      "company": "Example Co",
+      "location": "Istanbul, Türkiye",
+      "period": "Jun 2025 - Sep 2025",
+      "highlights": [
+        "Write one concrete sentence per thing you actually built",
+        "Name the technology and what it did, not the responsibility"
+      ]
+    }
+  ],
+
+  "projects": [
+    {
+      "name": "Example Project",
+      "summary": "One line on what it is and what it is written in",
+      "highlights": [
+        "A specific technical decision and its effect",
+        "Another one; these are what the drafter reaches for instead of inventing"
+      ]
+    }
+  ],
+
+  "skills": {
+    "core": ["java", "spring boot", "postgresql", "rest api", "docker", "git"],
+    "secondary": ["typescript", "react", "redis", "kafka"],
+    "exploratory": ["llm", "rag"]
+  },
+
+  "_note_role_titles": "A trailing * matches any suffix. Turkish is agglutinative, so 'yazılım mühendis*' is what covers mühendisi, mühendisliği and mühendislik.",
+  "role_families": [
+    {
+      "name": "backend",
+      "weight": 1.0,
+      "titles": [
+        "backend developer", "backend engineer", "java developer",
+        "software developer", "software engineer",
+        "yazılım geliştirici*", "yazılım mühendis*", "backend geliştirici*"
+      ]
+    },
+    {
+      "name": "fullstack",
+      "weight": 0.9,
+      "titles": ["full stack developer", "fullstack engineer", "web developer"]
+    }
+  ],
+
+  "excluded_keywords": [
+    "sales", "satış", "sap abap", "cobol", "mainframe",
+    "manuel test uzmanı", "veri girişi"
+  ]
+}

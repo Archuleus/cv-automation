@@ -1,0 +1,12 @@
+{
+  "_note": "Copy to data/directories.json. Each entry is one public page that lists member companies; 'jobbot companies discover' extracts the outbound links generically rather than parsing each site's markup, so a redesign costs nothing and a dead URL costs one request.",
+
+  "_note_what_to_add": "Anything that lists technology employers: technopark and incubator member pages, accelerator portfolios, sector association member lists, conference sponsor pages. These surface exactly the small and unknown companies a hand-written list misses. Verify a URL in a browser before adding it -- directory pages move often.",
+
+  "_note_filtering": "Links to social platforms, job boards, government sites and the directory's own navigation are discarded automatically, so a page with a lot of chrome is still fine to add.",
+
+  "directories": [
+    { "name": "Example Technopark", "url": "https://example-teknopark.com.tr/firmalar", "note": "Member company list" },
+    { "name": "Example Association", "url": "https://example-association.org/members", "note": "Sector association" }
+  ]
+}

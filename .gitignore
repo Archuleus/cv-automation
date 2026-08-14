@@ -1,0 +1,38 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+.env
+.env.local
+*.db
+*.db-journal
+*.sqlite3
+var/
+
+# Your own registries: the boards you poll, the employers you seed, the
+# directories you harvest. These accumulate as you use the tool and are yours.
+# The .example.json templates are committed; copy them to get started.
+data/*.json
+!data/*.example.json
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Personal documents - never commit
+cv/*.pdf
+cv/*.docx
+cv/profile.json
+
+# Prepared applications contain the CV's contents in prose
+outbox/
+
+.vscode/
+.idea/

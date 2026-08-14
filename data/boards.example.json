@@ -1,0 +1,16 @@
+{
+  "_note": "Copy to data/boards.json. This is the list of company ATS boards arm 1 polls. Every provider here publishes a free, public JSON endpoint for its customers' job boards, so reading it is not scraping and does not break when a careers page is restyled. Arm 2 appends to this file automatically whenever it detects a board behind a company's careers page, so the registry grows on its own.",
+
+  "_note_finding_tokens": "Open a company's careers page and look at where the apply button goes; the token is the path segment. boards.greenhouse.io/ACME -> greenhouse/acme. jobs.lever.co/ACME -> lever/acme. jobs.ashbyhq.com/ACME -> ashby/acme. apply.workable.com/ACME -> workable/acme. ACME.recruitee.com -> recruitee/acme. jobs.smartrecruiters.com/Acme -> smartrecruiters/Acme (case matters here).",
+
+  "_note_verify": "Run 'jobbot boards add <provider> <token>' to add one; it refuses a token that returns no postings, because an unverified token polls nothing forever without ever failing visibly. 'jobbot boards verify --prune' rechecks the whole file.",
+
+  "boards": [
+    { "provider": "greenhouse", "token": "gitlab", "name": "GitLab", "domain": "gitlab.com", "country": "US" },
+    { "provider": "greenhouse", "token": "elastic", "name": "Elastic", "domain": "elastic.co", "country": "NL" },
+    { "provider": "greenhouse", "token": "canonical", "name": "Canonical (Ubuntu)", "domain": "canonical.com", "country": "UK" },
+    { "provider": "lever", "token": "spotify", "name": "Spotify", "domain": "spotify.com", "country": "SE" },
+    { "provider": "ashby", "token": "posthog", "name": "PostHog", "domain": "posthog.com", "country": "US" },
+    { "provider": "ashby", "token": "supabase", "name": "Supabase", "domain": "supabase.com", "country": "US" }
+  ]
+}

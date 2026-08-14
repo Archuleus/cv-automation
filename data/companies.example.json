@@ -1,0 +1,13 @@
+{
+  "_note": "Copy to data/tr_companies.json (or set JOBBOT_TR_COMPANIES_PATH). This is only a bootstrap: on first run it is loaded into the database, and after that the database is the source of truth. 'jobbot companies discover' grows it automatically, so this file does not need to be long or maintained by hand.",
+
+  "_note_bias": "When you do add entries by hand, favour mid-size firms and startups over famous ones. The well-known names receive thousands of applications and rarely hire juniors; a twenty-person company hires two a year and gets forty applications. Discovery is biased that way on purpose and this file should be too.",
+
+  "_note_fields": "name and domain are required. sector is free text and only shows up in reports.",
+
+  "companies": [
+    { "name": "Example Software", "domain": "example-software.com.tr", "sector": "saas" },
+    { "name": "Example Fintech", "domain": "example-fintech.com", "sector": "fintech" },
+    { "name": "Example Games", "domain": "example-games.io", "sector": "gaming" }
+  ]
+}
