@@ -243,6 +243,10 @@ through only the new ones. Two sources ship:
 
 Adding a source grows the search permanently. Editing a JSON file grows it once.
 
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, change it, ship it.
+
 ## Layout
 
 ```

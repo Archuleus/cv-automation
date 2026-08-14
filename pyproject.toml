@@ -3,6 +3,8 @@ name = "jobbot"
 version = "0.1.0"
 description = "Multi-agent job application automation: discovery, contact resolution, human-reviewed outreach."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "sqlmodel>=0.0.22",
