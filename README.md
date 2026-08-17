@@ -138,9 +138,54 @@ jobbot config check       # which features your .env can actually run
 jobbot db init            # create the schema
 jobbot db status          # row counts per table
 jobbot run --arm 1        # run a single arm
-jobbot run                # run the whole pipeline
+jobbot run                # run the whole pipeline, arm 0 through arm 3
 jobbot jobs top           # highest-scoring stored postings
 ```
+
+Every arm is checked before any arm starts. Arm 1 takes twenty minutes against a
+real registry, and finding out afterwards that the model was never running — so
+arm 3 was never going to work — wastes the whole run to learn something knowable
+at the start.
+
+After that the arms are independent, so a failing one is recorded and the rest
+still run; the exit code is non-zero if any of them failed. `--stop-on-error`
+opts into stopping at the first failure instead.
+
+## Running it unattended
+
+```bash
+jobbot schedule install   # prints the scheduler entry; --apply registers it
+jobbot schedule status    # when each arm last ran, and when it is next due
+jobbot run --due-only     # run only the arms whose interval has elapsed
+```
+
+The scheduler fires one command on a short fixed interval and `--due-only`
+decides what is actually due, so cadence lives in your `.env` and the scheduler
+entry never changes when you adjust it:
+
+| Setting | Default | Why |
+|---|---|---|
+| `JOBBOT_ARM0_INTERVAL_HOURS` | 168 | Company directories change over months; polling daily spends requests to learn nothing. |
+| `JOBBOT_ARM1_INTERVAL_HOURS` | 24 | ATS boards are cheap to poll and postings appear daily. |
+| `JOBBOT_ARM2_INTERVAL_HOURS` | 24 | Paced by `ARM2_BATCH_SIZE` (25) rather than by frequency. |
+| `JOBBOT_ARM3_INTERVAL_HOURS` | 24 | Budgeted to `ARM3_BATCH_SIZE` (5): drafting is about a minute of GPU each. |
+
+Due-ness is measured from each arm's last *completed* run, so an arm that fails
+is retried on the next tick rather than locked out for a full interval by its own
+failure.
+
+**Nothing is sent by any of this.** An unattended run ends at a folder of drafts
+in `outbox/`, exactly as a manual one does.
+
+One run at a time is enforced with a lock file beside the database. Overlapping
+runs were never a correctness problem — the cooldown constraint rejects a
+duplicate application whatever the caller does — but two processes drafting the
+same queue burn the GPU twice to produce one usable card. A lock older than
+`JOBBOT_MAX_RUN_HOURS` (6) is treated as abandoned and reclaimed; that is
+age-based rather than a check on whether the recorded process is alive, because
+pid liveness is not portable to Windows and a wrong answer either way is worse
+than no check. If a run is killed hard, `jobbot run` says which pid holds the
+lock and where the file is.
 
 ### Managing the board registry
 
@@ -187,7 +232,7 @@ uv run mypy
 | 4a | Arm 3 - local model, drafting, validation | done |
 | 4b | Arm 3 - outbox: prepared applications as files | done |
 | 4c | Arm 3 - optional automated sender | done, not the default |
-| 5 | Orchestration and scheduling | pending |
+| 5 | Orchestration, cadence, single-instance locking | done |
 | 6 | Observability and hardening | pending |
 
 ### Why there are two discovery arms
@@ -255,6 +300,8 @@ src/jobbot/
   models.py          schema; the safety constraints live here
   db.py              engine, sessions, SQLite pragmas
   events.py          append-only audit trail
+  orchestrate.py     arm order, preflight, run history, cadence
+  locks.py           one run at a time
   logging_setup.py   console logging (ASCII-only for Windows terminals)
   cli.py             command line entry point
 tests/

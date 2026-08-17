@@ -89,6 +89,27 @@ class Settings(BaseSettings):
     min_match_score: int = Field(default=55, ge=0, le=100)
     review_confidence_threshold: int = Field(default=70, ge=0, le=100)
 
+    # Orchestration. `run --due-only` reads these and the run history to decide
+    # what to execute, which is what lets an external scheduler fire the same
+    # command every hour forever without knowing anything about the arms.
+    #
+    # Arm 0 is weekly because company directories change on the order of months;
+    # polling them daily spends requests to learn nothing.
+    arm0_interval_hours: int = Field(default=168, ge=1)
+    arm1_interval_hours: int = Field(default=24, ge=1)
+    arm2_interval_hours: int = Field(default=24, ge=1)
+    arm3_interval_hours: int = Field(default=24, ge=1)
+
+    # Per-run batch budgets. Arm 3's is small on purpose: drafting runs a local
+    # model at roughly a minute per application, so an unbudgeted nightly run
+    # would occupy the GPU for an hour to produce more cards than anyone reads.
+    arm2_batch_size: int = Field(default=25, ge=1)
+    arm3_batch_size: int = Field(default=5, ge=1)
+
+    # How long a lock file may sit before a later run treats it as abandoned.
+    # See jobbot.locks for why this is age-based and not a pid liveness check.
+    max_run_hours: int = Field(default=6, ge=1)
+
     # LLM. Used by arm 3 only -- scoring is rule-based and needs no model.
     # Runs locally through Ollama, so there is no API key and no per-request cost.
     llm_host: str = "http://localhost:11434"
@@ -174,6 +195,17 @@ class Settings(BaseSettings):
     def tr_companies_file(self) -> Path:
         path = Path(self.tr_companies_path)
         return path if path.is_absolute() else PROJECT_ROOT / path
+
+    @property
+    def lock_file(self) -> Path:
+        """Where the single-instance pipeline lock lives.
+
+        Beside the database, because the lock protects work recorded in it: a
+        second database implies a second, independently lockable pipeline.
+        """
+        db_path = self.db_path
+        directory = db_path.parent if db_path is not None else PROJECT_ROOT / "var"
+        return directory / "jobbot.lock"
 
     @property
     def ms_token_file(self) -> Path:

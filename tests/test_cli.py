@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
+from dataclasses import replace
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -121,11 +124,28 @@ class TestRun:
         assert result.exit_code == 2
         assert "no seed companies" in result.stdout
 
-    def test_unimplemented_arm_exits_nonzero_rather_than_silently_succeeding(self):
+    def test_arm_3_reports_an_unavailable_model_before_drafting(self, monkeypatch):
+        # Patched rather than exercised: an unpatched arm 3 on a machine with a
+        # profile and a running Ollama would draft real applications from a test.
+        from jobbot import orchestrate
+
+        def refuse(settings):
+            raise orchestrate.PreflightError(3, "ollama is not reachable")
+
+        monkeypatch.setitem(
+            orchestrate.BY_NUMBER, 3, replace(orchestrate.BY_NUMBER[3], preflight=refuse)
+        )
+
         result = runner.invoke(app, ["run", "--arm", "3"])
 
-        assert result.exit_code == 1
-        assert "phase 4" in result.stdout
+        assert result.exit_code == 2
+        assert "ollama is not reachable" in result.stdout
+
+    def test_arm_0_is_reachable_from_run(self):
+        # Company discovery existed since phase 3 but `run` could not invoke it.
+        from jobbot import orchestrate
+
+        assert [s.number for s in orchestrate.arms_for("0")] == [0]
 
     def test_unknown_arm_is_a_usage_error(self):
         result = runner.invoke(app, ["run", "--arm", "9"])
@@ -137,6 +157,98 @@ class TestRun:
         result = runner.invoke(app, ["run", "--arm", "discovery"])
 
         assert result.exit_code == 2
+
+    def test_refuses_to_start_while_another_run_holds_the_lock(self):
+        settings = get_settings()
+        settings.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        settings.lock_file.write_text(
+            json.dumps({"pid": 4812, "started_at": datetime.now(UTC).isoformat()}),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["run", "--arm", "1"])
+
+        assert result.exit_code == 1
+        assert "another run holds" in result.stdout
+
+    def test_the_lock_is_released_after_a_refused_run(self):
+        # Arm 1 exits 2 on an empty registry; the lock must not survive that.
+        runner.invoke(app, ["run", "--arm", "1"])
+
+        assert not get_settings().lock_file.exists()
+
+
+class TestDueOnly:
+    def _complete_every_arm(self):
+        from jobbot import orchestrate
+        from jobbot.db import session_scope, sync_schema
+        from jobbot.models import PipelineRun, RunStatus
+
+        sync_schema()
+        with session_scope() as session:
+            for spec in orchestrate.ARMS:
+                session.add(
+                    PipelineRun(
+                        arm=spec.number,
+                        status=RunStatus.COMPLETED,
+                        finished_at=datetime.now(UTC),
+                    )
+                )
+
+    def test_runs_nothing_when_no_arm_is_due(self):
+        self._complete_every_arm()
+
+        result = runner.invoke(app, ["run", "--due-only"])
+
+        assert result.exit_code == 0
+        assert "nothing due" in result.stdout
+
+    def test_reports_when_each_waiting_arm_becomes_due(self):
+        self._complete_every_arm()
+
+        result = runner.invoke(app, ["run", "--due-only"])
+
+        assert "not due until" in result.stdout
+
+    def test_a_due_arm_still_runs_its_preflight(self):
+        # Nothing has run, so every arm is due; arm 1 must still refuse an empty
+        # registry rather than being waved through by the cadence check.
+        result = runner.invoke(app, ["run", "--arm", "1", "--due-only"])
+
+        assert result.exit_code == 2
+        assert "no boards configured" in result.stdout
+
+
+class TestSchedule:
+    def test_status_lists_every_arm_as_never_run(self):
+        result = runner.invoke(app, ["schedule", "status"])
+
+        assert result.exit_code == 0
+        assert "never run" in result.stdout
+
+    def test_status_shows_a_completed_run(self):
+        from jobbot.db import session_scope, sync_schema
+        from jobbot.models import PipelineRun, RunStatus
+
+        sync_schema()
+        with session_scope() as session:
+            session.add(
+                PipelineRun(
+                    arm=1, status=RunStatus.COMPLETED, finished_at=datetime.now(UTC)
+                )
+            )
+
+        result = runner.invoke(app, ["schedule", "status"])
+
+        assert result.exit_code == 0
+        assert "completed" in result.stdout
+
+    def test_install_prints_the_entry_without_registering_it(self):
+        result = runner.invoke(app, ["schedule", "install"])
+
+        assert result.exit_code == 0
+        assert "--due-only" in result.stdout
+        assert "--apply" in result.stdout
 
 
 class TestBoards:

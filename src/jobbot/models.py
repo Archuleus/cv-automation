@@ -29,6 +29,18 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def as_utc(moment: datetime | None) -> datetime | None:
+    """Re-attach UTC to a datetime that came back from the database.
+
+    SQLite has no timezone type, so a tz-aware value written here is read back
+    naive. Comparing that against ``utcnow()`` raises TypeError, which would turn
+    an ordinary "is this arm due yet" question into a crash.
+    """
+    if moment is None:
+        return None
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
 def url_fingerprint(url: str) -> str:
     """Stable short hash of a URL, used for cross-source deduplication."""
     normalised = url.strip().lower().rstrip("/")
@@ -102,6 +114,12 @@ class ReviewDecision(StrEnum):
     EDIT_APPROVE = "edit_approve"
     REJECT = "reject"
     BLOCK_COMPANY = "block_company"
+
+
+class RunStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 # --------------------------------------------------------------------------
@@ -216,6 +234,39 @@ class ReviewQueueItem(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class PipelineRun(SQLModel, table=True):
+    """One execution of one arm.
+
+    A run of the whole pipeline writes one row per arm rather than a single row
+    for the batch, because the question actually asked of this table is
+    per-arm — "when did arm 1 last succeed" is what decides whether arm 1 is due
+    now. Aggregating four rows into a verdict about a batch is easy; splitting
+    one row back into per-arm history is not.
+
+    Rows are written before the arm runs and updated when it finishes, so an
+    interrupted run leaves a ``running`` row behind. That is deliberate: a
+    crashed arm should be visible in the history rather than absent from it.
+    """
+
+    __tablename__ = "pipeline_runs"
+    __table_args__ = (Index("ix_run_arm_status_started", "arm", "status", "started_at"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    arm: int = Field(index=True)
+    status: RunStatus = Field(default=RunStatus.RUNNING, index=True)
+    started_at: datetime = Field(default_factory=utcnow, index=True)
+    finished_at: datetime | None = None
+    pid: int | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    error: str | None = None
+
+    @property
+    def duration_seconds(self) -> float | None:
+        if self.finished_at is None:
+            return None
+        return (self.finished_at - self.started_at).total_seconds()
+
+
 class Event(SQLModel, table=True):
     """Append-only audit trail. Every state change in every arm lands here."""
 
@@ -230,4 +281,4 @@ class Event(SQLModel, table=True):
     ts: datetime = Field(default_factory=utcnow, index=True)
 
 
-ALL_TABLES = (Company, Job, Contact, Application, ReviewQueueItem, Event)
+ALL_TABLES = (Company, Job, Contact, Application, ReviewQueueItem, PipelineRun, Event)

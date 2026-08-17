@@ -8,6 +8,8 @@ status line would kill an otherwise healthy batch run.
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -18,8 +20,22 @@ from jobbot import __version__
 from jobbot.config import FEATURE_REQUIREMENTS, get_settings
 from jobbot.db import drop_all, get_engine, session_scope, sync_schema
 from jobbot.logging_setup import setup_logging
-from jobbot.models import Application, Company, Contact, Event, Job, ReviewQueueItem
+from jobbot.models import (
+    Application,
+    Company,
+    Contact,
+    Event,
+    Job,
+    PipelineRun,
+    ReviewQueueItem,
+)
 
+if TYPE_CHECKING:
+    from jobbot.config import Settings
+    from jobbot.orchestrate import ArmResult, ArmSpec
+
+# Rich strips colour automatically when stdout is not a terminal, which is what a
+# scheduled run redirected to a log file needs; no extra handling here.
 console = Console()
 
 app = typer.Typer(
@@ -37,6 +53,7 @@ mail_app = typer.Typer(help="Outbound mail (optional; not the default path).", n
 outbox_app = typer.Typer(help="Applications prepared for you to send.", no_args_is_help=True)
 contacts_app = typer.Typer(help="Discovered application routes.", no_args_is_help=True)
 companies_app = typer.Typer(help="The employer list, and growing it.", no_args_is_help=True)
+schedule_app = typer.Typer(help="Unattended runs.", no_args_is_help=True)
 app.add_typer(db_app, name="db")
 app.add_typer(config_app, name="config")
 app.add_typer(boards_app, name="boards")
@@ -46,6 +63,7 @@ app.add_typer(companies_app, name="companies")
 app.add_typer(llm_app, name="llm")
 app.add_typer(outbox_app, name="outbox")
 app.add_typer(mail_app, name="mail")
+app.add_typer(schedule_app, name="schedule")
 
 COUNTED_TABLES = (
     ("companies", Company),
@@ -53,16 +71,9 @@ COUNTED_TABLES = (
     ("contacts", Contact),
     ("applications", Application),
     ("review_queue", ReviewQueueItem),
+    ("pipeline_runs", PipelineRun),
     ("events", Event),
 )
-
-# Arms are built in later phases; the CLI surface exists now so the pipeline
-# shape is visible and each arm stays independently runnable from day one.
-ARM_PHASES = {
-    1: ("discover", "Company and job discovery", "phase 2"),
-    2: ("contacts", "Contact resolution", "phase 3"),
-    3: ("apply", "Content generation and review queue", "phase 4"),
-}
 
 
 @app.callback()
@@ -174,117 +185,113 @@ def config_check() -> None:
 
 @app.command()
 def run(
-    arm: str = typer.Option("all", "--arm", help="Which arm to run: 1, 2, 3, or all."),
+    arm: str = typer.Option("all", "--arm", help="Which arm to run: 0, 1, 2, 3, or all."),
+    due_only: bool = typer.Option(
+        False, "--due-only", help="Run only the arms whose interval has elapsed."
+    ),
+    stop_on_error: bool = typer.Option(
+        False, "--stop-on-error", help="Stop at the first failing arm instead of continuing."
+    ),
 ) -> None:
-    """Run one arm of the pipeline, or the whole thing."""
-    requested = list(ARM_PHASES) if arm == "all" else [_parse_arm(arm)]
-    unimplemented = False
+    """Run one arm of the pipeline, or the whole thing.
 
-    for number in requested:
-        name, description, phase = ARM_PHASES[number]
-        if number == 1:
-            _run_discovery()
-            continue
-        if number == 2:
-            _run_contact_resolution()
-            continue
-        console.print(
-            f"[PENDING] arm {number} ({name}: {description}) lands in {phase}; nothing to run yet."
-        )
-        unimplemented = True
+    Arms are independent, so by default a failing arm is recorded and the rest
+    still run; the exit code is non-zero if any of them failed.
+    """
+    from jobbot import orchestrate
+    from jobbot.locks import LockHeldError, pipeline_lock
 
-    if unimplemented:
+    settings = get_settings()
+    try:
+        requested = orchestrate.arms_for(arm)
+    except orchestrate.UnknownArmError:
+        valid = ", ".join(str(spec.number) for spec in orchestrate.ARMS)
+        console.print(f"[FAIL] unknown arm {arm!r}; expected one of {valid}, or 'all'")
+        raise typer.Exit(code=2) from None
+
+    try:
+        with pipeline_lock(settings.lock_file, max_age_hours=settings.max_run_hours):
+            _run_locked(
+                requested, settings, due_only=due_only, stop_on_error=stop_on_error
+            )
+    except LockHeldError as error:
+        console.print(f"[FAIL] {error}")
+        raise typer.Exit(code=1) from None
+
+
+def _run_locked(
+    requested: list[ArmSpec],
+    settings: Settings,
+    *,
+    due_only: bool,
+    stop_on_error: bool,
+) -> None:
+    """The body of `run`, executed while holding the pipeline lock."""
+    from jobbot import orchestrate
+
+    if due_only:
+        requested, waiting = orchestrate.select_due(requested, settings)
+        for number, due_at in sorted(waiting.items()):
+            console.print(f"[..] arm {number} not due until {due_at:%Y-%m-%d %H:%M} UTC")
+        if not requested:
+            console.print("[OK] nothing due")
+            return
+
+    failures = orchestrate.preflight(requested, settings)
+    if failures:
+        # Reported before any arm runs: arm 1 takes twenty minutes, and finding
+        # out afterwards that arm 3 was never going to work wastes all of it.
+        for failure in failures:
+            console.print(f"[FAIL] arm {failure.arm}: {failure.reason}")
+        raise typer.Exit(code=2)
+
+    def announce(spec: orchestrate.ArmSpec) -> None:
+        console.print(f"[..] {spec.label()}: {spec.description}")
+
+    result = orchestrate.run_arms(
+        requested,
+        settings,
+        stop_on_error=stop_on_error,
+        on_start=announce,
+        on_finish=_print_arm_result,
+    )
+
+    if result.failed:
         raise typer.Exit(code=1)
 
 
-def _run_discovery() -> None:
-    import asyncio
+def _print_arm_result(result: ArmResult) -> None:
+    """Render one arm's outcome, or the reason it produced none."""
+    spec = result.spec
+    if result.skipped_reason is not None:
+        console.print(f"[..] {spec.label()} skipped: {result.skipped_reason}")
+        return
+    if result.error is not None:
+        console.print(f"[FAIL] {spec.label()}: {result.error}")
+        return
 
-    from jobbot.arms import discover
-    from jobbot.connectors.ats import build_connectors
-    from jobbot.connectors.boards import load_boards
-    from jobbot.profile import ProfileNotFoundError, get_profile
+    outcome = result.outcome
+    if outcome is None:  # pragma: no cover - the branches above cover this
+        return
 
-    try:
-        get_profile()
-    except ProfileNotFoundError as error:
-        console.print(f"[FAIL] {error}")
-        raise typer.Exit(code=2) from None
-
-    boards = load_boards()
-    if not boards:
-        console.print("[FAIL] no boards configured; see data/boards.json")
-        raise typer.Exit(code=2)
-
-    sync_schema()
-    connectors = build_connectors(boards)
-    console.print(f"[..] arm 1: {len(boards)} boards across {len(connectors)} providers")
-
-    report = asyncio.run(discover.run(connectors))
-
-    table = Table(title="arm 1 - discovery")
+    table = Table(title=f"arm {spec.number} - {spec.name}")
     table.add_column("metric")
     table.add_column("count", justify="right")
-    for label, value in (
-        ("fetched", report.fetched),
-        ("duplicates dropped", report.duplicates),
-        ("rejected by rules", report.rejected),
-        ("below match threshold", report.below_threshold),
-        ("already known", report.already_known),
-        ("stored", report.stored),
-    ):
+    for label, value in outcome.metrics.items():
         table.add_row(label, str(value))
     console.print(table)
 
-    if report.reject_reasons:
-        reasons = Table(title="why postings were rejected")
-        reasons.add_column("rule")
-        reasons.add_column("count", justify="right")
-        for reason, count in sorted(report.reject_reasons.items(), key=lambda kv: -kv[1]):
-            reasons.add_row(reason, str(count))
-        console.print(reasons)
+    if outcome.detail:
+        detail = Table(title=outcome.detail_title or "breakdown")
+        detail.add_column("reason")
+        detail.add_column("count", justify="right")
+        for label, value in sorted(outcome.detail.items(), key=lambda kv: -kv[1]):
+            detail.add_row(label, str(value))
+        console.print(detail)
 
+    if outcome.hint:
+        console.print(f"[..] {outcome.hint}")
 
-def _run_contact_resolution(limit: int | None = None) -> None:
-    import asyncio
-
-    from jobbot.arms import contact
-
-    settings = get_settings()
-    seed = contact.load_seed()
-    if not seed:
-        console.print("[FAIL] no seed companies; see data/tr_companies.json")
-        raise typer.Exit(code=2)
-
-    sync_schema()
-    total = min(limit, len(seed)) if limit else len(seed)
-    console.print(f"[..] arm 2: visiting {total} company sites (robots.txt honoured)")
-
-    with session_scope() as session:
-        report = asyncio.run(
-            contact.run(settings=settings, session=session, limit=limit)
-        )
-
-    table = Table(title="arm 2 - contact resolution")
-    table.add_column("metric")
-    table.add_column("count", justify="right")
-    for label, value in (
-        ("companies visited", report.processed),
-        ("careers pages found", report.careers_pages),
-        ("ATS boards detected", report.ats_detected),
-        ("published emails found", report.emails_found),
-        ("boards added to arm 1", report.boards_added),
-    ):
-        table.add_row(label, str(value))
-    console.print(table)
-
-    if report.outcomes:
-        outcomes = Table(title="outcome per company")
-        outcomes.add_column("outcome")
-        outcomes.add_column("count", justify="right")
-        for outcome, count in sorted(report.outcomes.items(), key=lambda kv: -kv[1]):
-            outcomes.add_row(outcome, str(count))
-        console.print(outcomes)
 
 
 @companies_app.command("discover")
@@ -829,13 +836,100 @@ def boards_verify(
             console.print(f"[OK] pruned to {len(live)} boards")
 
 
-def _parse_arm(value: str) -> int:
-    try:
-        number = int(value)
-    except ValueError:
-        number = 0
-    if number not in ARM_PHASES:
-        valid = ", ".join(str(key) for key in ARM_PHASES)
-        console.print(f"[FAIL] unknown arm {value!r}; expected one of {valid}, or 'all'")
-        raise typer.Exit(code=2) from None
-    return number
+@schedule_app.command("status")
+def schedule_status() -> None:
+    """Show when each arm last ran and when it is next due."""
+    from datetime import UTC, datetime
+
+    from jobbot import orchestrate
+    from jobbot.models import RunStatus, as_utc
+
+    settings = get_settings()
+    now = datetime.now(UTC)
+    sync_schema()
+
+    table = Table(title="schedule")
+    table.add_column("arm")
+    table.add_column("every", justify="right")
+    table.add_column("last completed")
+    table.add_column("last status")
+    table.add_column("next due")
+
+    with session_scope() as session:
+        for spec in orchestrate.ARMS:
+            latest = orchestrate.last_run(session, spec.number)
+            completed = orchestrate.last_run(session, spec.number, status=RunStatus.COMPLETED)
+            due_at = orchestrate.next_due_at(spec, settings, completed)
+            started = as_utc(completed.started_at) if completed else None
+
+            if due_at is None:
+                due = "now (never run)"
+            elif now >= due_at:
+                due = "now"
+            else:
+                due = f"{due_at:%Y-%m-%d %H:%M} UTC"
+
+            table.add_row(
+                f"{spec.number} {spec.name}",
+                f"{getattr(settings, spec.interval_setting)}h",
+                f"{started:%Y-%m-%d %H:%M}" if started else "-",
+                latest.status.value if latest else "-",
+                due,
+            )
+
+    console.print(table)
+    console.print("[..] 'jobbot run --due-only' runs exactly the arms marked due")
+
+
+@schedule_app.command("install")
+def schedule_install(
+    every_hours: int = typer.Option(1, "--every-hours", help="How often the scheduler fires."),
+    apply: bool = typer.Option(False, "--apply", help="Register it, instead of printing it."),
+) -> None:
+    """Print the scheduler entry that runs the pipeline unattended.
+
+    The command it schedules is `run --due-only`, which decides for itself what
+    is actually due — so the cadence lives in your .env, and the scheduler entry
+    never has to change when you adjust it.
+    """
+    import subprocess
+    import sys
+
+    executable = Path(sys.executable).with_name("jobbot.exe")
+    command = (
+        f'"{executable}" run --due-only'
+        if executable.exists()
+        else f'"{sys.executable}" -m jobbot run --due-only'
+    )
+
+    if sys.platform == "win32":
+        argv = [
+            "schtasks", "/create", "/tn", "jobbot", "/sc", "hourly",
+            "/mo", str(every_hours), "/tr", command,
+        ]
+        printable = " ".join(argv)
+    else:
+        printable = f"0 */{every_hours} * * * {command}"
+        argv = []
+
+    # soft_wrap keeps this on one line: the whole point is that it can be copied
+    # and pasted, and a line break lands in the middle of the path.
+    console.print(f"\n  {printable}\n", soft_wrap=True)
+
+    if not apply:
+        where = "Task Scheduler" if sys.platform == "win32" else "your crontab"
+        console.print(f"[..] run that once to register it with {where}, or re-run with --apply")
+        return
+
+    if not argv:
+        # Rewriting a user's crontab from here is more intrusive than useful, and
+        # a bad edit costs them every other scheduled job on the machine.
+        console.print("[FAIL] --apply is Windows-only; add the cron line above by hand")
+        raise typer.Exit(code=2)
+
+    completed = subprocess.run(argv, capture_output=True, text=True)
+    if completed.returncode != 0:
+        console.print(f"[FAIL] schtasks: {completed.stderr.strip() or completed.stdout.strip()}")
+        raise typer.Exit(code=1)
+    console.print("[OK] registered as scheduled task 'jobbot'")
+    console.print("[..] remove it with: schtasks /delete /tn jobbot /f")
